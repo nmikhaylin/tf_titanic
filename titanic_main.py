@@ -9,6 +9,8 @@ import pandas as pd
 flags = tf.app.flags
 FLAGS = flags.FLAGS
 flags.DEFINE_string("summaries_dir", "summaries", "Directory for summaries.")
+flags.DEFINE_integer("num_iterations", 10, "Number of iteration cycles.")
+flags.DEFINE_integer("num_updates_per_iteration", 10, "Number of weight updates per iteration.")
 
 DATA_FOLDER = "/media/nikita/BigData/projects/tf_projects/titanic/data"
 
@@ -150,49 +152,43 @@ def ProcessFeatures(raw_df):
 def MakePredictions(training_df, testing_df):
 
   with tf.Session() as sess:
-    training_labels = training_df["Survived"].astype(np.int32)
+    training_labels = training_df["Survived"].astype(np.float32)
     training_features = ProcessFeatures(training_df.drop("Survived", 1))
     print training_features
     testing_features = ProcessFeatures(testing_df)
-    labels = training_labels.values
-    one_hotted_labels = pd.get_dummies(labels).as_matrix()
+    float_labels = np.expand_dims(training_labels, axis=1)
+    print type(float_labels)
+    print float_labels.shape
+    print float_labels.dtype
     feature_size = training_features.shape[1]
     print "Number of features: %d" % feature_size
     input_features = tf.placeholder(tf.float32, shape=[None, feature_size])
-    output_labels = tf.placeholder(tf.float32, shape=[None, 2])
+    output_labels = tf.placeholder(tf.float32, shape=[None, 1])
     # Output is survived or not.
-    W = tf.Variable(tf.zeros([feature_size, 2]))
-    b = tf.Variable(tf.zeros([2]))
-    pred = tf.nn.softmax(tf.matmul(input_features, W) + b)
-    cross_entropy = tf.reduce_mean(
-        tf.nn.softmax_cross_entropy_with_logits(pred, output_labels))
-    train_step = tf.train.GradientDescentOptimizer(learning_rate=0.5).minimize(cross_entropy)
+    W = tf.Variable(tf.zeros([feature_size, 1]))
+    b = tf.Variable(tf.zeros([1]))
+    y = tf.matmul(input_features, W) + b
+    add_delta = tf.matmul(tf.transpose(input_features), output_labels - y)
+    update_weights = W.assign_add(add_delta)
+    pred = tf.cast(tf.cast(y > 0, tf.bool), tf.float32)
     initializer = tf.global_variables_initializer()
     sess.run(initializer)
-    print "Initial cross_entropy: %f" % cross_entropy.eval(
-        feed_dict={input_features: training_features, output_labels: one_hotted_labels})
-    tf.summary.scalar("cross_entropy", cross_entropy)
-    accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(one_hotted_labels,1), tf.argmax(pred,1)), tf.float32))
+    accuracy = tf.reduce_mean(tf.cast(tf.equal(pred, output_labels), tf.float32))
     tf.summary.scalar("accuracy", accuracy)
     merged = tf.summary.merge_all()
     train_writer = tf.summary.FileWriter(FLAGS.summaries_dir + "/train", sess.graph)
-    summary = sess.run(merged, feed_dict={input_features: training_features,
-                                    output_labels: one_hotted_labels})
-    train_writer.add_summary(summary)
-    print "Initial Accuracy %f" % accuracy.eval(
-        feed_dict={input_features: training_features, output_labels: one_hotted_labels})
-    train_step.run(
-        feed_dict={input_features: training_features, output_labels: one_hotted_labels})
-    print "Final cross_entropy: %f" % cross_entropy.eval(
-        feed_dict={input_features: training_features, output_labels: one_hotted_labels})
-    print "Final Accuracy %f" % accuracy.eval(
-        feed_dict={input_features: training_features, output_labels: one_hotted_labels})
-    print "Predictions: "
-    predictions = tf.argmax(pred, 1).eval(
-        feed_dict={input_features: testing_features})
-    print len(predictions)
+    for i in range(FLAGS.num_iterations):
+      summary = sess.run(merged, feed_dict={input_features: training_features, output_labels: float_labels})
+      train_writer.add_summary(summary, i)
+      for i in range(FLAGS.num_updates_per_iteration):
+        sess.run(update_weights, feed_dict={input_features: training_features,
+                                        output_labels: float_labels})
+    print "Final accuracy: %f" % accuracy.eval(
+        feed_dict={input_features: training_features,
+                   output_labels: float_labels})
     ret_df = pd.DataFrame(data={"PassengerId": testing_df["PassengerId"],
-                                "Survived": predictions})
+                                "Survived": tf.squeeze(pred).eval(feed_dict={
+                                  input_features: testing_features})})
     print ret_df
 
     return ret_df
