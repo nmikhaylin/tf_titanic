@@ -9,10 +9,11 @@ import pandas as pd
 flags = tf.app.flags
 FLAGS = flags.FLAGS
 flags.DEFINE_string("summaries_dir", "summaries", "Directory for summaries.")
-flags.DEFINE_integer("num_iterations", 10, "Number of iteration cycles.")
-flags.DEFINE_integer("num_updates_per_iteration", 10, "Number of weight updates per iteration.")
+flags.DEFINE_integer("num_iterations", 28, "Number of iteration cycles.")
+flags.DEFINE_integer("num_updates_per_iteration", 5, "Number of weight updates per iteration.")
+flags.DEFINE_float("validation_set_fraction", .1, "Fraction of test set to leave for validation.")
 
-DATA_FOLDER = "/media/nikita/BigData/projects/tf_projects/titanic/data"
+DATA_FOLDER = "data"
 
 
 def variable_summaries(var):
@@ -138,14 +139,13 @@ def ProcessFeatures(raw_df):
                    u'Embarked_Q', u'Embarked_S'])
               - set(one_hotted.columns)):
       one_hotted[col] = 0.0
-  print one_hotted.describe()
+  one_hotted["Bias"] = 1.0
   one_hotted = one_hotted[list(sorted(one_hotted.columns))]
   # Remove unnecessary columns from the full matrix.
-  print one_hotted.columns
   columns_to_select = ["Sex_male", "Sex_female", "Age", "Age_Unknown_True",
                        "Age_Unknown_False", "Fare", "Fare_Unknown_True",
                        "Fare_Unknown_False", "Cabin_Number", "Pclass_1",
-                       "Pclass_2", "Pclass_3"]
+                       "Pclass_2", "Pclass_3", "Bias"]
   return one_hotted[columns_to_select].as_matrix()
 
 
@@ -157,39 +157,65 @@ def MakePredictions(training_df, testing_df):
     print training_features
     testing_features = ProcessFeatures(testing_df)
     float_labels = np.expand_dims(training_labels, axis=1)
-    print type(float_labels)
-    print float_labels.shape
-    print float_labels.dtype
+    validation_split_idx = int(
+        float_labels.shape[0] * (1 - FLAGS.validation_set_fraction))
+    print validation_split_idx
+    validation_features = training_features[validation_split_idx:,:]
+    training_features = training_features[0:validation_split_idx,:]
+    print training_features.shape
+    print validation_features.shape
+    training_float_labels = float_labels[0:validation_split_idx,:]
+    validation_float_labels = float_labels[validation_split_idx:,:]
+    print training_float_labels.shape
+    print validation_float_labels.shape
+    print "Num survived: %f" % np.sum(float_labels)
     feature_size = training_features.shape[1]
     print "Number of features: %d" % feature_size
     input_features = tf.placeholder(tf.float32, shape=[None, feature_size])
     output_labels = tf.placeholder(tf.float32, shape=[None, 1])
     # Output is survived or not.
     W = tf.Variable(tf.zeros([feature_size, 1]))
-    b = tf.Variable(tf.zeros([1]))
-    y = tf.matmul(input_features, W) + b
-    add_delta = tf.matmul(tf.transpose(input_features), output_labels - y)
-    update_weights = W.assign_add(add_delta)
+    y = tf.matmul(input_features, W)
     pred = tf.cast(tf.cast(y > 0, tf.bool), tf.float32)
+    add_delta = tf.matmul(tf.transpose(input_features), output_labels - pred)
+    update_weights = W.assign_add(add_delta)
     initializer = tf.global_variables_initializer()
     sess.run(initializer)
     accuracy = tf.reduce_mean(tf.cast(tf.equal(pred, output_labels), tf.float32))
-    tf.summary.scalar("accuracy", accuracy)
-    merged = tf.summary.merge_all()
+    training_accuracy = tf.summary.scalar("training_accuracy", accuracy)
+    predicted_survived = tf.reduce_sum(pred)
+    training_survived = tf.summary.scalar("predicted_survived", predicted_survived)
+    validation_accuracy = tf.summary.scalar("validation_accuracy", accuracy)
+
+    training_merged_summaries = tf.summary.merge(
+        [training_accuracy, training_survived])
+    validation_merged_summaries = tf.summary.merge(
+        [validation_accuracy])
     train_writer = tf.summary.FileWriter(FLAGS.summaries_dir + "/train", sess.graph)
     for i in range(FLAGS.num_iterations):
-      summary = sess.run(merged, feed_dict={input_features: training_features, output_labels: float_labels})
-      train_writer.add_summary(summary, i)
-      for i in range(FLAGS.num_updates_per_iteration):
-        sess.run(update_weights, feed_dict={input_features: training_features,
-                                        output_labels: float_labels})
-    print "Final accuracy: %f" % accuracy.eval(
+      train_summary = sess.run(training_merged_summaries, feed_dict={
+        input_features: training_features, 
+        output_labels: training_float_labels})
+      validation_summary = sess.run(validation_merged_summaries, feed_dict={
+        input_features: validation_features,
+        output_labels: validation_float_labels})
+      train_writer.add_summary(train_summary, i)
+      train_writer.add_summary(validation_summary, i)
+      for j in range(FLAGS.num_updates_per_iteration):
+        for ex in range(training_float_labels.shape[0]):
+          sess.run(update_weights, feed_dict={
+            input_features: training_features[ex:ex+1,:],
+            output_labels: training_float_labels[ex:ex+1,:]})
+    print "Final training accuracy: %f" % accuracy.eval(
         feed_dict={input_features: training_features,
-                   output_labels: float_labels})
+                   output_labels: training_float_labels})
+    print "Final validation accuracy: %f" % accuracy.eval(
+        feed_dict={input_features: validation_features,
+                   output_labels: validation_float_labels})
     ret_df = pd.DataFrame(data={"PassengerId": testing_df["PassengerId"],
                                 "Survived": tf.squeeze(pred).eval(feed_dict={
-                                  input_features: testing_features})})
-    print ret_df
+                                  input_features: testing_features}).astype(
+                                    np.int32)})
 
     return ret_df
 
