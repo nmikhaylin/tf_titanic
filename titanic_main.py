@@ -1,6 +1,7 @@
 import os
 import re
 import csv
+import random
 
 import numpy as np
 import tensorflow as tf
@@ -9,9 +10,11 @@ import pandas as pd
 flags = tf.app.flags
 FLAGS = flags.FLAGS
 flags.DEFINE_string("summaries_dir", "summaries", "Directory for summaries.")
-flags.DEFINE_integer("num_iterations", 28, "Number of iteration cycles.")
-flags.DEFINE_integer("num_updates_per_iteration", 5, "Number of weight updates per iteration.")
-flags.DEFINE_float("validation_set_fraction", .1, "Fraction of test set to leave for validation.")
+flags.DEFINE_integer("num_iterations", 10, "Number of iteration cycles.")
+flags.DEFINE_integer("num_updates_per_iteration", 5,
+                     "Number of weight updates per iteration.")
+flags.DEFINE_float("validation_set_fraction", .1,
+                   "Fraction of test set to leave for validation.")
 
 DATA_FOLDER = "data"
 
@@ -52,7 +55,8 @@ def LoadTestingData():
   cabin_numbers = set()
   df = pd.DataFrame(
       columns=["PassengerId", "Pclass", "Name", "Sex", "Age",
-               "SibSp", "Parch", "Ticket", "Fare", "Cabin_Letter", "Cabin_Number", "Embarked"])
+               "SibSp", "Parch", "Ticket", "Fare", "Cabin_Letter",
+               "Cabin_Number", "Embarked"])
   with open(os.path.join(DATA_FOLDER, "titanic_test.csv"), "r") as f:
     reader = csv.DictReader(f)
     for row in reader:
@@ -87,7 +91,8 @@ def LoadTrainingData():
   cabin_numbers = set()
   df = pd.DataFrame(
       columns=["PassengerId", "Survived", "Pclass", "Name", "Sex", "Age",
-               "SibSp", "Parch", "Ticket", "Fare", "Cabin_Letter", "Cabin_Number", "Embarked"])
+               "SibSp", "Parch", "Ticket", "Fare", "Cabin_Letter",
+               "Cabin_Number", "Embarked"])
   with open(os.path.join(DATA_FOLDER, "titanic_train.csv"), "r") as f:
     reader = csv.DictReader(f)
     for row in reader:
@@ -120,56 +125,55 @@ def ProcessFeatures(raw_df):
   ret_df = ret_df.drop("PassengerId", 1)
   remove_unknowns = lambda x:  float(x) if x else 30.0
   is_unknown = lambda x:  False if x else True
-  ret_df["Age_Unknown"] = ret_df["Age"].apply(is_unknown)
+  ret_df["Age_Unknown"] = ret_df["Age"].apply(is_unknown).astype(np.float32)
   ret_df["Age"] = ret_df["Age"].apply(remove_unknowns)
-  ret_df["Fare_Unknown"] = ret_df["Fare"].apply(is_unknown)
+  ret_df["Fare_Unknown"] = ret_df["Fare"].apply(is_unknown).astype(np.float32)
   ret_df["Fare"] = ret_df["Fare"].apply(remove_unknowns)
   int_columns = ["Parch", "SibSp"]
   for column in int_columns:
       ret_df[column] = ret_df[column].astype(np.int32)
   categorical_columns = [
-      "Pclass", "Sex", "Cabin_Letter", "Embarked", "Fare_Unknown",
-      "Age_Unknown"]
+      "Pclass", "Sex", "Cabin_Letter", "Embarked"]
   one_hotted = pd.get_dummies(
       ret_df, columns=categorical_columns).astype(np.float32)
   for col in (set([u'Cabin_Letter_',
                    u'Cabin_Letter_A', u'Cabin_Letter_B', u'Cabin_Letter_C',
                    u'Cabin_Letter_D', u'Cabin_Letter_E', u'Cabin_Letter_F',
-                   u'Cabin_Letter_G', u'Embarked_C', u'Cabin_Letter_T', u'Embarked_',
-                   u'Embarked_Q', u'Embarked_S'])
+                   u'Cabin_Letter_G', u'Embarked_C', u'Cabin_Letter_T',
+                   u'Embarked_', u'Embarked_Q', u'Embarked_S'])
               - set(one_hotted.columns)):
       one_hotted[col] = 0.0
   one_hotted["Bias"] = 1.0
   one_hotted = one_hotted[list(sorted(one_hotted.columns))]
   # Remove unnecessary columns from the full matrix.
-  columns_to_select = ["Sex_male", "Sex_female", "Age", "Age_Unknown_True",
-                       "Age_Unknown_False", "Fare", "Fare_Unknown_True",
-                       "Fare_Unknown_False", "Cabin_Number", "Pclass_1",
+  columns_to_select = ["Sex_male", "Sex_female", "Age", "Age_Unknown",
+                       "Fare", "Fare_Unknown", "Cabin_Number", "Pclass_1",
                        "Pclass_2", "Pclass_3", "Bias"]
   return one_hotted[columns_to_select].as_matrix()
 
+def GenerateSampledTrainingAndValidationSets(all_features, all_labels):
+  all_indx_set = set(range(all_labels.shape[0]))
+  validation_indices = set(random.sample(all_indx_set,
+    int(len(all_indx_set) * FLAGS.validation_set_fraction)))
+  training_indices = all_indx_set - validation_indices
+  validation_features = all_features[list(validation_indices),:]
+  training_features = all_features[list(training_indices),:]
+  training_labels = all_labels[list(training_indices),:]
+  validation_labels = all_labels[list(validation_indices),:]
+  return (training_features, training_labels, validation_features,
+          validation_labels)
+
+
+
 
 def MakePredictions(training_df, testing_df):
-
   with tf.Session() as sess:
     training_labels = training_df["Survived"].astype(np.float32)
-    training_features = ProcessFeatures(training_df.drop("Survived", 1))
-    print training_features
+    all_features = ProcessFeatures(training_df.drop("Survived", 1))
     testing_features = ProcessFeatures(testing_df)
     float_labels = np.expand_dims(training_labels, axis=1)
-    validation_split_idx = int(
-        float_labels.shape[0] * (1 - FLAGS.validation_set_fraction))
-    print validation_split_idx
-    validation_features = training_features[validation_split_idx:,:]
-    training_features = training_features[0:validation_split_idx,:]
-    print training_features.shape
-    print validation_features.shape
-    training_float_labels = float_labels[0:validation_split_idx,:]
-    validation_float_labels = float_labels[validation_split_idx:,:]
-    print training_float_labels.shape
-    print validation_float_labels.shape
     print "Num survived: %f" % np.sum(float_labels)
-    feature_size = training_features.shape[1]
+    feature_size = all_features.shape[1]
     print "Number of features: %d" % feature_size
     input_features = tf.placeholder(tf.float32, shape=[None, feature_size])
     output_labels = tf.placeholder(tf.float32, shape=[None, 1])
@@ -193,8 +197,11 @@ def MakePredictions(training_df, testing_df):
         [validation_accuracy])
     train_writer = tf.summary.FileWriter(FLAGS.summaries_dir + "/train", sess.graph)
     for i in range(FLAGS.num_iterations):
+      (training_features, training_float_labels, validation_features,
+          validation_float_labels) = GenerateSampledTrainingAndValidationSets(
+              all_features, float_labels)
       train_summary = sess.run(training_merged_summaries, feed_dict={
-        input_features: training_features, 
+        input_features: training_features,
         output_labels: training_float_labels})
       validation_summary = sess.run(validation_merged_summaries, feed_dict={
         input_features: validation_features,
@@ -202,6 +209,9 @@ def MakePredictions(training_df, testing_df):
       train_writer.add_summary(train_summary, i)
       train_writer.add_summary(validation_summary, i)
       for j in range(FLAGS.num_updates_per_iteration):
+        (training_features, training_float_labels, validation_features,
+            validation_float_labels) = GenerateSampledTrainingAndValidationSets(
+                all_features, float_labels)
         for ex in range(training_float_labels.shape[0]):
           sess.run(update_weights, feed_dict={
             input_features: training_features[ex:ex+1,:],
